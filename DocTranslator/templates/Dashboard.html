@@ -1,1 +1,122 @@
-<!DOCTYPE html><html lang="en"><head>    <meta charset="UTF-8">    <meta name="viewport" content="width=device-width, initial-scale=1.0">    <title>Dashboard</title></head><body><!--<h1>Welcome, {{ session["username"] }}!</h1>--><h2>Upload a File</h2><form id="uploadForm">    <input type="file" name="file">    <input type="button" id="uploadbutton" onclick="uploadfile()" value="Upload"></form><form action="sharedoc.html">    <input type="submit" value="Next"></form><!-- Static Data or Cards Section --><script >    function uploadfile(){        let formData = new FormData(document.getElementById('uploadForm'));        // Send a POST request to the Flask API endpoint for file upload        let baseURL = "http://localhost:5001";        fetch(baseURL+'/upload', {            method: 'POST',            body: formData        })            .then(response => {                if (response.ok) {                    // Display success message                    alert('File uploaded successfully!');                } else {                    // Display error message                    alert('An error occurred while uploading the file.');                }                console.log(response)            })            .catch(error => {                console.error('Error:', error);                alert('An error occurred while uploading the file.');            });    }</script></body></html>
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Dashboard</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            background-color: #35c99a;
+            margin: 0;
+            padding: 0;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+        }
+
+         h2 {
+            margin: 1em 0 0.5em 0;
+            color: #343434;
+            font-weight: normal;
+            font-family: 'Ultra', sans-serif;
+            font-size: 36px;
+            line-height: 42px;
+            text-transform: uppercase;
+            text-shadow: 0 2px white, 0 3px #777;
+        }
+
+        form {
+            background-color: #ffffff;
+            padding: 30px;
+            border-radius: 8px;
+            box-shadow: 0 0 20px rgba(0, 0, 0, 0.1);
+            width: 400px;
+        }
+
+        input[type="file"] {
+            margin-bottom: 10px;
+            display: block;
+        }
+
+        input[type="button"],
+        input[type="submit"] {
+            background-color: #4CAF50;
+            color: white;
+            padding: 12px 20px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            transition: background-color 0.3s;
+            font-size: 16px;
+            width: 100%;
+        }
+
+        input[type="button"]:hover,
+        input[type="submit"]:hover {
+            background-color: #45a049;
+        }
+
+    </style>
+</head>
+<body>
+<h2>Upload a File</h2>
+<form id="uploadForm" enctype="multipart/form-data">
+    <input type="file" name="file" id="fileInput"><br>
+    <input type="button" id="uploadbutton" onclick="uploadfile()" value="Upload">
+</form>
+<form action="sharedoc.html">
+    <input type="submit" value="Next">
+</form>
+<!-- Static Data or Cards Section -->
+<script>
+    function uploadfile(){
+
+        let formData = new FormData();
+        let fileInput = document.getElementById('fileInput');
+        let file = fileInput.files[0];
+        formData.append('file', file);
+        formData.append('fileName', file.name)
+
+        // Debug: Log contents of formData
+        for (let [key, value] of formData.entries()) {
+            console.log("formData values: ", key, value);
+        }
+
+        // Send a POST request to the Flask API endpoint for file upload
+        fetch('https://xjjok42fyc.execute-api.us-east-1.amazonaws.com/prod/upload', {
+            method: 'POST',
+            body: formData,
+            // headers: headers
+        })
+            .then(response => {
+                if (response.ok) {
+                    // Display success message
+                    displayAlert('File uploaded successfully!', 'success');
+                } else {
+                    // Display error message
+                    displayAlert('An error occurred while uploading the file.', 'error');
+                }
+                console.log(response)
+            })
+            .catch(error => {
+                console.error('Error:', error);
+                displayAlert('An error occurred while uploading the file.', 'error');
+            });
+    }
+
+    function displayAlert(message, type) {
+        const alertDiv = document.createElement('div');
+        alertDiv.classList.add('alert');
+        alertDiv.classList.add(type);
+        alertDiv.textContent = message;
+        document.body.appendChild(alertDiv);
+        setTimeout(() => {
+            alertDiv.remove();
+        }, 3000); // Remove the alert after 3 seconds
+    }
+</script>
+</body>
+</html>

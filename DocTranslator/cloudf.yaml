@@ -1,0 +1,428 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: AWS CloudFormation for Document Sharing and Management
+
+Parameters:
+  InstanceEnvironmentParameter:
+    Type: String
+    Default: dev
+    AllowedValues:
+      - dev
+      - prod
+    Description: Enter dev or prod environment, default is dev.
+
+  KeyNameParameter:
+    Type: String
+    Description: Name of the existing key pair to be used for SSH access.
+
+  UserEmail:
+    Type: String
+    Description: Email of the user to subscribe to the SNS topic
+
+Mappings:
+  InstanceMap:
+    us-east-1:
+      dev: t2.micro
+      prod: m1.small
+    us-west-1:
+      dev: m1.small
+      prod: m1.large
+  AMIMap:
+    us-east-1:
+      dev: ami-051f8a213df8bc089
+      prod: ami-0915bcb5fa77e4892
+    us-west-1:
+      dev: ami-051f8a213df8bc089
+      prod: ami-066c82dabe6dd7f73
+
+Resources:
+  WebAppSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      # GroupName: !Join ["-", [webapp-security-group, dev]]
+      GroupName:
+        !Join ["-", [webapp-security-group, !Ref InstanceEnvironmentParameter]]
+      GroupDescription: "Allow HTTP/HTTPS and SSH inbound and outbound traffic"
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: 0.0.0.0/0
+
+  WebAppEC2Instance:
+    Type: "AWS::EC2::Instance"
+    DependsOn: WebAppSecurityGroup
+    Properties:
+      AvailabilityZone: us-east-1a
+      # ImageId: ami-0d5eff06f840b45e9
+      ImageId:
+        !FindInMap [
+          AMIMap,
+          !Ref "AWS::Region",
+          !Ref InstanceEnvironmentParameter,
+        ]
+      # InstanceType: t2.micro
+      InstanceType:
+        !FindInMap [
+          InstanceMap,
+          !Ref "AWS::Region",
+          !Ref InstanceEnvironmentParameter,
+        ]
+      # KeyName: key-pair-cloud-term-project
+      KeyName: !Ref KeyNameParameter
+      SecurityGroups:
+        - !Ref WebAppSecurityGroup
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          sudo yum install nginx git -y
+          sudo systemctl enable nginx
+          sudo systemctl start nginx
+          mkdir -p /home/ec2-user/AWS-CLoud-Project
+          cd /home/ec2-user/AWS-CLoud-Project
+          sudo git clone https://github.com/abhilatawa/AWS-CLoud-Project .
+          sudo cp -r /home/ec2-user/AWS-CLoud-Project/DocTranslator/templates/* /usr/share/nginx/html/ || true
+          sudo systemctl restart nginx
+
+  MyEIP:
+    Type: AWS::EC2::EIP
+    DependsOn: WebAppEC2Instance
+    Properties:
+      InstanceId: !Ref WebAppEC2Instance
+
+  WebAppS3Bucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: abhishek-cloud-term-assign-bucket
+      VersioningConfiguration:
+        Status: Enabled
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: false
+        IgnorePublicAcls: false
+        BlockPublicPolicy: false
+        RestrictPublicBuckets: false
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+
+  SqsQueue:
+      Type: AWS::SQS::Queue
+      Properties:
+        MessageRetentionPeriod: 345600
+
+  MySNSTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      DisplayName: AbhishekNotificationTopic
+
+  MySNSSubscription:
+    Type: AWS::SNS::Subscription
+    DependsOn: MySNSTopic
+    Properties:
+      Protocol: email
+      Endpoint: !Ref UserEmail
+      TopicArn: !Ref MySNSTopic
+
+  LoginFunction:
+    Type: "AWS::Lambda::Function"
+    Properties:
+      FunctionName: loginFunc
+      Handler: login.lambda_handler
+      Role: arn:aws:iam::654654451380:role/LabRole
+      Code:
+        S3Bucket: term-assignment
+        S3Key: login.py.zip
+      Runtime: python3.8
+      Timeout: 30
+
+  UploadFunction:
+    Type: "AWS::Lambda::Function"
+    Properties:
+      FunctionName: uploadFunc
+      Handler: upload.lambda_handler
+      Role: arn:aws:iam::654654451380:role/LabRole
+      Code:
+        S3Bucket: term-assignment
+        S3Key: upload.py.zip
+      Runtime: python3.8
+      Timeout: 30
+      Environment:
+        Variables:
+          S3_BUCKET_NAME: !Ref WebAppS3Bucket
+          SQS_NAME: !Ref SqsQueue
+
+  EmailSenderFunction:
+    Type: "AWS::Lambda::Function"
+    Properties:
+      FunctionName: EmailSender
+      Handler: emailsender.lambda_handler
+      Role: arn:aws:iam::654654451380:role/LabRole
+      Code:
+        S3Bucket: term-assignment
+        S3Key: emailsender.py.zip
+      Runtime: python3.8
+      Timeout: 30
+      Environment:
+        Variables:
+          S3_BUCKET_NAME: !Ref WebAppS3Bucket
+          SQS_Service_Name: !Ref SqsQueue
+          SNS_Topic_Name: !Ref MySNSTopic
+
+  ApiGatewayRestApi:
+    Type: AWS::ApiGateway::RestApi
+    Properties:
+      Name: AbhishekAPI
+      Description: API Gateway for Term Project
+      # FailOnWarnings: true
+      ApiKeySourceType: HEADER
+      EndpointConfiguration:
+        Types:
+          - EDGE
+
+  LoginApiResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      ParentId: !GetAtt ApiGatewayRestApi.RootResourceId
+      PathPart: login
+      RestApiId: !Ref ApiGatewayRestApi
+
+  LoginApiMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref ApiGatewayRestApi
+      ResourceId: !Ref LoginApiResource
+      HttpMethod: POST
+      AuthorizationType: NONE
+      ApiKeyRequired: false
+      Integration:
+        IntegrationHttpMethod: POST
+        TimeoutInMillis: 29000
+        Type: AWS_PROXY
+        Uri: !Sub arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${LoginFunction.Arn}/invocations
+      MethodResponses:
+        - StatusCode: 200
+
+  LoginApiOptionsMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      AuthorizationType: NONE
+      HttpMethod: OPTIONS
+      ResourceId: !Ref LoginApiResource
+      RestApiId: !Ref ApiGatewayRestApi
+      Integration:
+        Type: MOCK
+        RequestTemplates:
+          application/json: '{"statusCode": 200}'
+        IntegrationResponses:
+          - StatusCode: 200
+            ResponseParameters:
+              method.response.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'"
+              method.response.header.Access-Control-Allow-Methods: "'POST,OPTIONS'"
+              method.response.header.Access-Control-Allow-Origin: "'*'"
+            ResponseTemplates:
+              application/json: ""
+      MethodResponses:
+        - StatusCode: 200
+          ResponseModels:
+            application/json: Empty
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Headers: TRUE
+            method.response.header.Access-Control-Allow-Methods: TRUE
+            method.response.header.Access-Control-Allow-Origin: TRUE
+
+  EmailSenderApiResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      ParentId: !GetAtt ApiGatewayRestApi.RootResourceId
+      PathPart: sendemail
+      RestApiId: !Ref ApiGatewayRestApi
+
+  EmailSenderApiMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref ApiGatewayRestApi
+      ResourceId: !Ref EmailSenderApiResource
+      HttpMethod: POST
+      AuthorizationType: NONE
+      ApiKeyRequired: false
+      Integration:
+        IntegrationHttpMethod: POST
+        TimeoutInMillis: 29000
+        Type: AWS_PROXY
+        Uri: !Sub arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${EmailSenderFunction.Arn}/invocations
+      MethodResponses:
+        - StatusCode: 200
+
+  EmailSenderOptionsApiMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      AuthorizationType: NONE
+      HttpMethod: OPTIONS
+      ResourceId: !Ref EmailSenderApiResource
+      RestApiId: !Ref ApiGatewayRestApi
+      Integration:
+        Type: MOCK
+        RequestTemplates:
+          application/json: '{"statusCode": 200}'
+        IntegrationResponses:
+          - StatusCode: 200
+            ResponseParameters:
+              method.response.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'"
+              method.response.header.Access-Control-Allow-Methods: "'POST,OPTIONS'"
+              method.response.header.Access-Control-Allow-Origin: "'*'"
+            ResponseTemplates:
+              application/json: ""
+      MethodResponses:
+        - StatusCode: 200
+          ResponseModels:
+            application/json: Empty
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Headers: TRUE
+            method.response.header.Access-Control-Allow-Methods: TRUE
+            method.response.header.Access-Control-Allow-Origin: TRUE
+
+  UploadApiResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      ParentId: !GetAtt ApiGatewayRestApi.RootResourceId
+      PathPart: upload
+      RestApiId: !Ref ApiGatewayRestApi
+
+  UploadApiMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref ApiGatewayRestApi
+      ResourceId: !Ref UploadApiResource
+      HttpMethod: POST
+      AuthorizationType: NONE
+      Integration:
+        IntegrationHttpMethod: POST # This stays as POST because it refers to the method Lambda expects from API Gateway
+        Type: AWS_PROXY
+        Uri: !Sub arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${UploadFunction.Arn}/invocations
+      MethodResponses:
+        - StatusCode: 200
+
+  UploadApiOptionsMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      AuthorizationType: NONE
+      HttpMethod: OPTIONS
+      ResourceId: !Ref UploadApiResource
+      RestApiId: !Ref ApiGatewayRestApi
+      Integration:
+        Type: MOCK
+        RequestTemplates:
+          application/json: '{"statusCode": 200}'
+        IntegrationResponses:
+          - StatusCode: 200
+            ResponseParameters:
+              method.response.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'"
+              method.response.header.Access-Control-Allow-Methods: "'POST,OPTIONS'"
+              method.response.header.Access-Control-Allow-Origin: "'*'"
+            ResponseTemplates:
+              application/json: ""
+      MethodResponses:
+        - StatusCode: 200
+          ResponseModels:
+            application/json: Empty
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Headers: TRUE
+            method.response.header.Access-Control-Allow-Methods: TRUE
+            method.response.header.Access-Control-Allow-Origin: TRUE
+
+  # Permissions for each Lambda to be invoked by API Gateway...
+  LambdaPermissionForApiGatewayLogin:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref LoginFunction
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${ApiGatewayRestApi}/*/POST/login
+
+  LambdaPermissionForApiGatewayUpload:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref UploadFunction
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${ApiGatewayRestApi}/*/POST/upload
+
+  LambdaPermissionForApiGatewaySendEmail:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref EmailSenderFunction
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${ApiGatewayRestApi}/*/POST/sendemail
+
+  ApiGatewayModel:
+    Type: AWS::ApiGateway::Model
+    Properties:
+      ContentType: "application/json"
+      RestApiId: !Ref ApiGatewayRestApi
+      Schema: {}
+
+  ApiGatewayDeployment:
+    Type: AWS::ApiGateway::Deployment
+    DependsOn:
+      - LoginApiMethod
+      - UploadApiMethod
+      - LoginApiOptionsMethod
+      - UploadApiOptionsMethod
+      - EmailSenderApiMethod
+      - EmailSenderOptionsApiMethod
+    Properties:
+      RestApiId: !Ref ApiGatewayRestApi
+      Description: "My API Deployment"
+      StageName: "prod"
+
+Outputs:
+  WebAppInstanceID:
+    Description: "ID of the EC2 instance running the React application"
+    Value: !Ref WebAppEC2Instance
+    Export:
+      Name: "WebAppInstanceID"
+
+  WebAppPublicIP:
+    Description: "Public IP address of the EC2 instance"
+    Value: !GetAtt WebAppEC2Instance.PublicIp
+    Export:
+      Name: "WebAppPublicIP"
+
+  WebAppPublicDNS:
+    Description: "Public DNS name of the EC2 instance"
+    Value: !GetAtt WebAppEC2Instance.PublicDnsName
+    Export:
+      Name: "WebAppPublicDNS"
+
+  ApiGatewayUrl:
+    Description: "URL of the deployed API Gateway"
+    Value: !Sub "https://${ApiGatewayRestApi}.execute-api.${AWS::Region}.amazonaws.com/prod"
+    Export:
+      Name: "ApiGatewayUrl"
+
+  SNSTopicARN:
+    Description: "ARN of the SNS topic for notifications"
+    Value: !Ref MySNSTopic
+    Export:
+      Name: "SNSTopicARN"
+
+  LoginFunctionARN:
+    Description: "ARN of the Lambda function for login"
+    Value: !GetAtt LoginFunction.Arn
+    Export:
+      Name: "LoginFunctionARN"
+
+  UploadFunctionARN:
+    Description: "ARN of the Lambda function for handling uploads"
+    Value: !GetAtt UploadFunction.Arn
+    Export:
+      Name: "UploadFunctionARN"
